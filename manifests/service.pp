@@ -147,6 +147,6 @@ class logstash::service {
     owner  => 'root',
     group  => 'root',
     mode   => '0664',
-    #notify => Exec['logstash-system-install'],
+    notify => Exec['logstash-system-install'],
   }
 }
