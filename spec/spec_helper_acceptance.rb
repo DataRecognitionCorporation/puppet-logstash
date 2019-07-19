@@ -9,12 +9,16 @@ if ENV['LOGSTASH_VERSION'].nil?
   raise 'Please set the LOGSTASH_VERSION environment variable.'
 end
 LS_VERSION = ENV['LOGSTASH_VERSION']
-PUPPET_VERSION = ENV['PUPPET_VERSION'] || '3.8.6'
+PUPPET_VERSION = ENV['PUPPET_VERSION'] || '4.10.7'
 
 PE_VERSION = ENV['BEAKER_PE_VER'] || ENV['PE_VERSION'] || '3.8.3'
 PE_DIR = ENV['BEAKER_PE_DIR']
 
-REPO_VERSION = LS_VERSION[0] + ".x" # "5.0.1" -> "5.x"
+if LS_VERSION =~ /(alpha|beta|rc)/
+  IS_PRERELEASE = true
+else
+  IS_PRERELEASE = false
+end
 
 def agent_version_for_puppet_version(puppet_version)
   # REF: https://docs.puppet.com/puppet/latest/reference/about_agent.html
@@ -22,9 +26,13 @@ def agent_version_for_puppet_version(puppet_version)
     # Puppet => Agent
     '4.9.4' => '1.9.3',
     '4.8.2' => '1.8.3',
+    '4.8.1' => '1.8.2',
+    '4.8.0' => '1.8.0',
     '4.7.1' => '1.7.2',
     '4.7.0' => '1.7.1',
     '4.6.2' => '1.6.2',
+    '4.6.1' => '1.6.1',
+    '4.6.0' => '1.6.0',
     '4.5.3' => '1.5.3',
     '4.4.2' => '1.4.2',
     '4.4.1' => '1.4.1',
@@ -75,11 +83,17 @@ def logstash_package_filename
 end
 
 def logstash_package_version
+  if LS_VERSION =~ /(alpha|beta|rc)/
+    package_version = LS_VERSION.gsub('-', '~')
+  else
+    package_version = LS_VERSION
+  end
+
   case fact('osfamily') # FIXME: Put this logic in the module, not the tests.
   when 'RedHat'
-    "#{LS_VERSION}-1"
+    "#{package_version}-1"
   when 'Debian', 'Suse'
-    "1:#{LS_VERSION}-1"
+    "1:#{package_version}-1"
   end
 end
 
@@ -93,12 +107,28 @@ end
 
 def install_logstash_manifest(extra_args = nil)
   <<-END
+  class { 'elastic_stack::repo':
+    version    => #{LS_VERSION[0]},
+    prerelease => #{IS_PRERELEASE.to_s},
+  }
   class { 'logstash':
     manage_repo  => true,
-    repo_version => '#{REPO_VERSION}',
     version      => '#{logstash_package_version}',
     #{extra_args if extra_args}
   }
+
+  #{logstash_config_manifest}
+  END
+end
+
+def include_logstash_manifest()
+  <<-END
+  class { 'elastic_stack::repo':
+    version    => #{LS_VERSION[0]},
+    prerelease => #{IS_PRERELEASE.to_s},
+  }
+
+  include logstash
 
   #{logstash_config_manifest}
   END
@@ -129,19 +159,22 @@ end
 
 # Provide a basic Logstash install. Useful as a testing pre-requisite.
 def install_logstash(extra_args = nil)
-  apply_manifest(install_logstash_manifest(extra_args), catch_failures: true)
+  result = apply_manifest(install_logstash_manifest(extra_args), catch_failures: true)
   sleep 5 # FIXME: This is horrible.
+  return result
 end
 
 def include_logstash
-  apply_manifest('include logstash', catch_failures: true, debug: true)
+  result = apply_manifest(include_logstash_manifest, catch_failures: true, debug: true)
   sleep 5 # FIXME: This is horrible.
+  return result
 end
 
 def install_logstash_from_url(url, extra_args = nil)
   manifest = install_logstash_from_url_manifest(url, extra_args)
-  apply_manifest(manifest, catch_failures: true)
+  result = apply_manifest(manifest, catch_failures: true)
   sleep 5 # FIXME: This is horrible.
+  return result
 end
 
 def install_logstash_from_local_file(extra_args = nil)
@@ -149,18 +182,20 @@ def install_logstash_from_local_file(extra_args = nil)
 end
 
 def remove_logstash
-  apply_manifest(remove_logstash_manifest)
+  result = apply_manifest(remove_logstash_manifest)
   sleep 5 # FIXME: This is horrible.
+  return result
 end
 
 def stop_logstash
-  apply_manifest(stop_logstash_manifest, catch_failures: true)
+  result = apply_manifest(stop_logstash_manifest, catch_failures: true)
   shell('ps -eo comm | grep java | xargs kill -9', accept_all_exit_codes: true)
   sleep 5 # FIXME: This is horrible.
+  return result
 end
 
 def logstash_process_list
-  ps_cmd = 'ps --no-headers -C java -o user,command | grep logstash/runner.rb'
+  ps_cmd = 'ps -ww --no-headers -C java -o user,command | grep logstash'
   shell(ps_cmd, accept_all_exit_codes: true).stdout.split("\n")
 end
 
@@ -170,6 +205,14 @@ end
 
 def expect_setting(setting, value)
   expect(logstash_settings[setting]).to eq(value)
+end
+
+def pipelines_from_yaml
+  YAML.load(shell('cat /etc/logstash/pipelines.yml').stdout)
+end
+
+def service_restart_message
+  "Service[logstash]: Triggered 'refresh'"
 end
 
 def pe_package_url
@@ -247,6 +290,9 @@ hosts.each do |host|
   # ...and another plugin that can be fetched from Puppet with "puppet://"
   FileUtils.cp('./spec/fixtures/plugins/logstash-output-cowthink-5.0.0.gem', './files/')
 
+  # ...and yet another plugin, this time packaged as an offline installer
+  FileUtils.cp('./spec/fixtures/plugins/logstash-output-cowsay-5.0.0.zip', './files/')
+
   # Provide a config file template.
   FileUtils.cp('./spec/fixtures/templates/configfile-template.erb', './templates/')
 
@@ -255,8 +301,7 @@ hosts.each do |host|
   install_dev_puppet_module_on(host, source: project_root, module_name: 'logstash')
 
   # Also install any other modules we need on the test system.
-  install_puppet_module_via_pmt_on(host, module_name: 'puppetlabs-stdlib')
-  install_puppet_module_via_pmt_on(host, module_name: 'puppetlabs-apt')
+  install_puppet_module_via_pmt_on(host, module_name: 'elastic-elastic_stack')
   install_puppet_module_via_pmt_on(host, module_name: 'darin-zypprepo')
 end
 

@@ -1,4 +1,3 @@
-
 # elastic/logstash
 
 A Puppet module for managing and configuring [Logstash](http://logstash.net/).
@@ -7,20 +6,24 @@ A Puppet module for managing and configuring [Logstash](http://logstash.net/).
 
 ## Logstash Versions
 
-This module, "elastic/logstash" supports only Logstash 5.x. For earlier
-Logstash versions, support is provided by the legacy module,
+This module, "elastic/logstash" supports only Logstash 5.x and 6.x. For earlier
+Logstash versions, support is provided by the legacy module
 "elasticsearch/logstash".
 
 ## Requirements
 
-* Puppet 3.8.6 or better.
-* The [stdlib](https://forge.puppetlabs.com/puppetlabs/stdlib) Puppet library.
+* Puppet 4.6.1 or better.
+* The [stdlib](https://forge.puppetlabs.com/puppetlabs/stdlib) module.
+* Logstash itself requires Java 8. The "puppetlabs/java" module is recommended
+  for installing Java. This module will not install Java.
 
 Optional:
-* The [apt](https://forge.puppetlabs.com/puppetlabs/apt) (>= 2.0.0) Puppet
-  library when using repo management on Debian/Ubuntu.
-* The [zypprepo](https://forge.puppetlabs.com/darin/zypprepo) Puppet library
-  when using repo management on SLES/SuSE
+* The [elastic_stack](https://forge.puppetlabs.com/elastic/elastic_stack) module
+  when using automatic repository management.
+* The [apt](https://forge.puppetlabs.com/puppetlabs/apt) (>= 2.0.0) module when
+  using repo management on Debian/Ubuntu.
+* The [zypprepo](https://forge.puppetlabs.com/darin/zypprepo) module when using
+  repo management on SLES/SuSE.
 
 ## Quick Start
 
@@ -39,7 +42,23 @@ logstash::configfile { 'my_ls_config':
 ### Choosing a Logstash minor version
 ``` puppet
 class { 'logstash':
-  version => '5.0.2',
+  version => '6.0.0',
+}
+```
+
+### Choosing a Logstash major version
+
+This module uses the related "elastic/elastic_stack" module to manage package
+repositories. Since there is a separate repository for each major version of
+the Elastic stack, if you don't want the default version (6), it's necessary
+to select which version to configure, like this:
+``` puppet
+class { 'elastic_stack::repo':
+  version => 5,
+}
+
+class { 'logstash':
+  version => '5.6.4',
 }
 ```
 
@@ -131,8 +150,8 @@ class { 'logstash':
   settings => {
     'pipeline' => {
       'batch' => {
-        'size' => 25,
-        'delay => 5,
+        'size'  => 25,
+        'delay' => 5,
       }
     }
   }
@@ -159,6 +178,30 @@ class { 'logstash':
 }
 ```
 
+#### `pipelines.yml`
+
+``` puppet
+class { 'logstash':
+  pipelines => [
+    {
+      "pipeline.id" => "pipeline_one",
+      "path.config" =>  "/usr/local/etc/logstash/pipeline-1/one.conf",
+    },
+    {
+      "pipeline.id" => "pipeline_two",
+      "path.config" =>  "/usr/local/etc/logstash/pipeline-2/two.conf",
+    }
+  ]
+}
+```
+
+Note that specifying `pipelines` will automatically remove the default
+`path.config` setting from `logstash.yml`, since this is incompatible with
+`pipelines.yml`.
+
+Enabling centralized pipeline management with `xpack.management.enabled` will
+also remove the default `path.config`.
+
 ### Pipeline Configuration
 Pipeline configuration files can be declared with the `logstash::configfile`
 type.
@@ -184,20 +227,34 @@ logstash::configfile { 'basic_ls_config':
 }
 ```
 
-If you want to use hiera to specify your configs, include the following create_resources call in your node manifest or in manifests/site.pp:
+You can also specify the exact path for the config file, which is
+particularly useful with multiple pipelines:
 
 ``` puppet
-$logstash_configs = hiera('logstash_configs', {})
-create_resources('logstash::configfile', $logstash_configs)
-```
-...and then include the following config within the corresponding hiera file:
-``` puppet
-"logstash_configs": {
-  "config-name": {
-    "template": "logstash/config.file.erb",
-  }
+logstash::configfile { 'config_for_pipeline_two':
+  content => 'input { heartbeat {} } output { null {} }',
+  path    => '/usr/local/etc/logstash/pipeline-2/two.conf',
 }
 ```
+
+If you want to use Hiera to specify your configs, include the following
+create_resources call in your manifest:
+
+``` puppet
+create_resources('logstash::configfile', hiera('my_logstash_configs'))
+```
+...and then create a data structure like this in Hiera:
+``` yaml
+---
+my_logstash_configs:
+  nginx:
+    template: site_logstash/nginx.conf.erb
+  syslog:
+    template: site_logstash/syslog.conf.erb
+```
+
+In this example, templates for the config files are stored in the custom,
+site-specific module "`site_logstash`".
 
 ### Patterns
 Many plugins (notably [Grok](http://logstash.net/docs/latest/filters/grok)) use *patterns*. While many are included in Logstash already, additional site-specific patterns can be managed as well.
@@ -254,6 +311,13 @@ logstash::plugin { 'logstash-filter-custom':
 ``` puppet
 logstash::plugin { 'x-pack':
   source => 'https://artifacts.elastic.co/downloads/packs/x-pack/x-pack-5.3.0.zip',
+}
+```
+
+### Controling the environment for the `logstash-plugin` command
+``` puppet
+logstash::plugin { 'logstash-input-websocket':
+  environment => 'LS_JAVA_OPTS=-Xms1g -Xmx1g',
 }
 ```
 

@@ -21,17 +21,38 @@
 #     source => 'puppet:///modules/logstash-site-plugins/logstash-input-custom.gem',
 #   }
 #
+# @example Install X-Pack.
+#   logstash::plugin { 'x-pack':
+#     source => 'https://artifacts.elastic.co/downloads/packs/x-pack/x-pack-5.3.0.zip',
+#   }
+#
+# @example Install a plugin, overriding JVM options via the environment.
+#   logstash::plugin { 'logstash-input-jmx':
+#     environment => ['LS_JAVA_OPTS=-Xms1g -Xmx1g']
+#   }
+#
 # @param ensure [String] Install or remove with `present` or `absent`.
 #
 # @param source [String] Install from this file, not from RubyGems.
 #
+# @param environment [String] Environment used when running 'logstash-plugin'
+#
 define logstash::plugin (
   $source = undef,
   $ensure = present,
+  $environment = [],
 )
 {
   require logstash::package
   $exe = "${logstash::home_dir}/bin/logstash-plugin"
+
+  Exec {
+    path        => '/bin:/usr/bin',
+    cwd         => '/tmp',
+    user        => $logstash::logstash_user,
+    timeout     => 1800,
+    environment => $environment,
+  }
 
   case $source { # Where should we get the plugin from?
     undef: {
@@ -56,7 +77,20 @@ define logstash::plugin (
         source => $source,
         before => Exec["install-${name}"],
       }
-      $plugin = $downloaded_file
+
+      case $source {
+        /\.zip$/: {
+          $plugin = "file://${downloaded_file}"
+        }
+        default: {
+          $plugin = $downloaded_file
+        }
+      }
+    }
+
+    /^https?:/: {
+      # An 'http(s):///' URL.
+      $plugin = $source
     }
 
     default: {
@@ -89,11 +123,5 @@ define logstash::plugin (
     default: {
       fail "'ensure' should be 'present', 'absent', or a version like '1.3.4'."
     }
-  }
-
-  Exec {
-    path    => '/bin:/usr/bin',
-    user    => $logstash::logstash_user,
-    timeout => 1800,
   }
 }
